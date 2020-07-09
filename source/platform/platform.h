@@ -14,6 +14,7 @@
 
 #include "../common/common.h"
 #include "../project/config.h"
+#include "string.h"
 
 //=============================================================================
 // Global Data Type Definition
@@ -27,12 +28,24 @@ typedef union
 	int16 buffer[CFG_NUM_2D_ROWS * CFG_NUM_2D_COLS];
 } touchImage_t;
 
-typedef struct
+//-----------------------------------------------------------------------------
+// Function Name:	segmentation data type
+// Description:		.
+//-----------------------------------------------------------------------------
+
+
+typedef union
 {
-	uint16 segment : 4;
+  struct{
+	uint16 lable : 4;
 	uint16 nextRow : 6;
 	uint16 nextCol : 6;
+  	} feilds;
+  uint16 value;
 } segmentLabel_t;
+
+
+typedef segmentLabel_t * segmentLabel_ptr;
 
 typedef union
 {
@@ -40,14 +53,39 @@ typedef union
 	segmentLabel_t buffer[CFG_NUM_2D_ROWS * CFG_NUM_2D_COLS];
 } segmentLabelImage_t;
 
+
+typedef struct
+{
+  segmentLabelImage_t const * lableMap; // label and linker. it has same size of img
+  segmentLabel_t const * segments;// it contains object info.
+  segmentLabel_t const * background; // it is link of background sensors or non-ROI sensor
+  segmentLabel_t const * unsegmented; // it is a link of small segments
+}segPublic_t;
+
+typedef struct
+{
+ int16 segResolution;
+ int16 segSigMax;
+ int16 segSigROI;
+ int16 segMinPeak;
+ int16 segMergeCoef;
+}segConfig_t;
+
+
 //=============================================================================
 // Global Functions Declaration
 //=============================================================================
 
 //-----------------------------------------------------------------------------
-// Function Name:	module_xxx
+// Function Name:	segmentation
 // Description:		.
 //-----------------------------------------------------------------------------
+void segmentation_init(void);
+void segmentation_getConfig(segConfig_t const * segConfigPtr);
+segmentLabel_ptr segmentation_searchRoi(touchImage_t* imgarray);
+segPublic_t * segmentation_getSegmentInfo(void);
+uint16 segmentation_segments(touchImage_t* imgarray);
+
 
 
 //-----------------------------------------------------------------------------

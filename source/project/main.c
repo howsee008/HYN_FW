@@ -18,6 +18,18 @@
 //=============================================================================
 // Local (Static) Variables Definition
 //=============================================================================
+int16  testimg[CFG_NUM_2D_COLS*CFG_NUM_2D_ROWS]={ 
+1,	1,	0,	2,	2,	1,
+0,	0,	0,	0,	0,	0,
+1,	1,	1,	3,	3,	1,
+1,	1,	1,	18,	60,	1,
+1,	62,	117,39,	84,	1,
+1,	30,	48,	7,	1,	1,
+1,	3,	7,	5,	3,	1,
+0,	0,	0,	0,	0,	0
+};
+
+segConfig_t segmentcfg={60,300,10,80,0};
 
 //=============================================================================
 // Local (Static) Functions Declaration
@@ -33,6 +45,17 @@
 //-----------------------------------------------------------------------------
 int main(void)
 {
+
+
+ 	segmentLabel_ptr roiptr;
+
+    segmentation_init();
+	segmentation_getConfig(&segmentcfg);
+	
+	roiptr = segmentation_searchRoi((touchImage_t *)testimg);
+
+	segmentation_segments((touchImage_t *)testimg);
+	
 	return 1;
 }
 
