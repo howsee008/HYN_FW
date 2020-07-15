@@ -56,21 +56,14 @@ static int16 seg_cfg_minPeak;
 static int16 seg_cfg_mergeCoef;
 static int16 seg_cfg_contourRes;
 
-static int16 seg_contourBin;
+static uint16 seg_contourBin;
+static uint16 seg_minpeakContourLevel;
 static uint16 segLable;
-
-//static segmentLabel_t damLinks;
-
-
-#if 0
-static int16 N9[8]={-(CFG_COL-1),-CFG_COL,-(CFG_COL+1),-1,1,(CFG_COL-1),CFG_COL,(CFG_COL+1)};
-static int16 N4[4]={-CFG_COL,-1,1,CFG_COL};
-#endif
 
 //=============================================================================
 // Local (Static) Functions Declaration
 //=============================================================================
-static segmentLabel_ptr segmentation_searchRoi(touchImage_t* imgarray, hook_t* seghook);
+//static segmentLabel_ptr segmentation_searchRoi(touchImage_t* imgarray, hook_t* seghook);
 static void segmentation_resetReport(void);
 static uint16 segmentation_sortbyContour(touchImage_t* imgarray, hook_t* seghook, hook_t* contour);
 static void segmentation_fillFlood(segnode_t * seedNode, uint16 lableId,segmentLabel_t * src, hook_t * segments, uint16 option );
@@ -79,12 +72,14 @@ static int16 segmentation_pushQueue(hook_t* hooks,  uint16 hookid, segnode_t* no
 static int16 segmentation_removeQueue(hook_t* hooks,uint16 hookid,segnode_t* node );
 static int16 segmentation_popQueue(hook_t* hooks,uint16 hookid,segnode_t* node );
 static int16 segmentation_getNeighbourPosition(uint16 neighbour, segnode_t* curNode, segnode_t* nbNode);
-static int16 segmentation_searchBlobByWatershed(hook_t* contour,hook_t* segments,uint16 minpeaklevel);
-static int16 segmentation_mergeblobs(touchImage_t* imgarray,int16* conTable,uint16 segCount, hook_t* seghook);
+static int16 segmentation_searchBlobByWatershed(hook_t* contour,hook_t* segments);
+static int16 segmentation_mergeblobs(touchImage_t* imgarray,int16* conTable,hook_t* seghook);
 static uint16 segmentation_calcMergeCoef(uint16 i, uint16 j,uint16 damsum);
 static void segmentation_doMergeblobs(uint16 merged, uint16 killed,hook_t* seghook);
 static void segmentation_calcSigsumAndCentroid(touchImage_t* imgarray,uint16 i);
-static void segmentation_dilateRoi(hook_t* roi);
+static void segmentation_sortDilatedRoiToSegments(touchImage_t* img, hook_t* seghook);
+
+//static void segmentation_dilateRoi(hook_t* roi);
 
 //-----------------------------------------------------------------------------
 // Function Name:	
@@ -112,7 +107,8 @@ static void segmentation_resetReport(void)
 {
 
 	memset((void*)&segLabelImage.buffer[0],0xff,sizeof(segLabelImage.buffer));
-    memset((void*)&seghooks[0],0xff,sizeof(segObjects));
+    memset((void*)&seghooks[0],0xff,sizeof(seghooks));
+	segLable=0;
 
 }
 
@@ -400,52 +396,11 @@ static void segmentation_fillFlood(segnode_t * seedNode, uint16 lableId,segmentL
 
 	}
 }
-
 //-----------------------------------------------------------------------------
 // Function Name:	segmenting_init
 // Description:		
 //-----------------------------------------------------------------------------
-static void segmentation_dilateRoi(hook_t* seghook)
-{
-	uint16 dilationCount;
-	segnode_t cur,nb,nxt;
-
-
-	cur.row=seghook->headP[SEGHOOKID_UNSEG].feilds.nextRow;
-	cur.col=seghook->headP[SEGHOOKID_UNSEG].feilds.nextCol;
-	dilationCount=0;
-
-	while(!(cur.row==0x3f&&cur.col==0x3f))
-	{
-	  uint16 nbId;
-	  for(nbId=0;nbId<4;nbId++)
-	  {
-		if(RES_OK==segmentation_getNeighbourPosition(nbId,&cur,&nb))
-		{
-			if(segLabelImage.matrix[nb.row][nb.col].value==0xffff)
-			{
-				segLabelImage.matrix[nb.row][nb.col].feilds.lable=OBJ_INIT;
-				segmentation_pushQueue(seghook,SEGHOOKID_DIA,&nb);
-				dilationCount++;
-			}
-		}
-	  }
-
-	  
-	  nxt.row=segLabelImage.matrix[cur.row][cur.col].feilds.nextRow;
-	  nxt.col=segLabelImage.matrix[cur.row][cur.col].feilds.nextCol;
-
-	  cur=nxt;
-	
-	
-  }
-}
-
-//-----------------------------------------------------------------------------
-// Function Name:	segmenting_init
-// Description:		
-//-----------------------------------------------------------------------------
-static void segmentation_sortDilatedRoiToSegments(hook_t* seghook)
+static void segmentation_sortDilatedRoiToSegments(touchImage_t* img, hook_t* seghook)
 {
 	segnode_t cur,nb;
 	uint16 lab,nbId;
@@ -459,7 +414,14 @@ static void segmentation_sortDilatedRoiToSegments(hook_t* seghook)
 			if(RES_OK==segmentation_getNeighbourPosition(nbId,&cur,&nb))
 			{
 				lab=segLabelImage.matrix[nb.row][nb.col].feilds.lable;
-				if(lab<CFG_MAX_OBJECTS) break;
+				if(lab<CFG_MAX_OBJECTS)
+				{
+					int16 sig;
+					sig = img->matrix[nb.row][nb.col];
+					if(sig>seg_cfg_minSig) break;
+
+				}
+					
 			}
 		}
 		
@@ -483,7 +445,7 @@ static void segmentation_sortDilatedRoiToSegments(hook_t* seghook)
 // Function Name:	segmenting_init
 // Description:		
 //-----------------------------------------------------------------------------
-static int16 segmentation_searchBlobByWatershed(hook_t* contour,hook_t* segments,uint16 minpeaklevel)
+static int16 segmentation_searchBlobByWatershed(hook_t* contour,hook_t* segments)
 {
   int16 labeid =0;
   uint16 nbId;
@@ -606,7 +568,7 @@ static int16 segmentation_searchBlobByWatershed(hook_t* contour,hook_t* segments
 
 	if(cur.row!=0x3f || cur.col!=0x3f)
 	{
-		if(loop<=minpeaklevel)
+		if(loop<=seg_minpeakContourLevel)
 		{
 			segmentation_pushQueue(contour, OBJ_MINB, &cur);
 			
@@ -642,7 +604,6 @@ static int16 segmentation_searchBlobByWatershed(hook_t* contour,hook_t* segments
   return segLable;
   
 }
-
 //-----------------------------------------------------------------------------
 // Function Name:	segmentation_sortbyContour
 // Description:		contour sorting unsegment node. if the node>seg_cfg_minSig
@@ -650,69 +611,116 @@ static int16 segmentation_searchBlobByWatershed(hook_t* contour,hook_t* segments
 //-----------------------------------------------------------------------------
 static uint16 segmentation_sortbyContour(touchImage_t* imgarray, hook_t* seghook, hook_t* contour)
 {
-	uint16 bin,level,n;
-	segnode_t curnode;
+	uint16 n;
+	segnode_t cur,nb,nxt;
+	uint8 row, col;
 
-	bin=(uint16)((seg_cfg_maxSig-seg_cfg_minSig)%seg_cfg_contourRes);
 
-	if(bin)
+ // step1 : contour ROI 
+	for(row=0;row<CFG_NUM_2D_ROWS;row++)
 	{
-		bin=(uint16)(1+((seg_cfg_maxSig-seg_cfg_minSig)/seg_cfg_contourRes));
-	}
-	else
-	{
-		bin=(uint16)((seg_cfg_maxSig-seg_cfg_minSig)/seg_cfg_contourRes);
-	}
-
-	level=((seg_cfg_minPeak-seg_cfg_minSig)+bin>>1)/bin;
-
-	if(level>seg_cfg_contourRes) level=seg_cfg_contourRes;
-
-	segmentation_popQueue(seghook, SEGHOOKID_UNSEG, &curnode);
-
-	while(!(curnode.row==0x3f && curnode.col==0x3f))
-	{
-		int16 sig;
-
-		sig=imgarray->matrix[curnode.row][curnode.col];
-
-		n=((sig-seg_cfg_minSig)+(bin>>1))/bin;
-
-		if(n>seg_cfg_contourRes) n=seg_cfg_contourRes;
-
-		segmentation_pushQueue(contour, n, &curnode);
-
-		segmentation_popQueue(seghook, SEGHOOKID_UNSEG, &curnode);
 		
-	}
-
-	// at minpeak level, there are some sig bigger than minpeak, push it to the up level.
-	if(level<seg_cfg_contourRes-1)
-	{
-		hook_t unsegmentHook;
-		unsegmentHook.headP=&contour->headP[level];
-		unsegmentHook.hookcount=1;
-		segmentation_popQueue(&unsegmentHook, 0, &curnode);
-		while(!(curnode.row==0x3f && curnode.col==0x3f))
+		for(col=0;col<CFG_NUM_2D_COLS;col++)
 		{
 			int16 sig;
-			sig=imgarray->matrix[curnode.row][curnode.col];
+						
+			sig=imgarray->matrix[row][col];
+
+			if(sig>seg_cfg_minSig)
+			{
+				segLabelImage.matrix[row][col].feilds.lable=OBJ_INIT;
+				
+				n=((sig-seg_cfg_minSig)+(seg_contourBin>>1))/seg_contourBin;
+				
+				if(n>seg_cfg_contourRes) n=seg_cfg_contourRes;
+
+				cur.row=row;
+				cur.col=col;
+				segmentation_pushQueue(contour, n, &cur);
+			}
+			
+			
+		}
+
+	}
+	// at minpeak level, there are some sig bigger than minpeak, push it to the up level.
+	if(seg_minpeakContourLevel<seg_cfg_contourRes-1)
+	{
+		hook_t unsegmentHook;
+		segmentLabel_t unseghead;
+		unseghead = contour->headP[seg_minpeakContourLevel];
+		unsegmentHook.headP=&unseghead;
+		unsegmentHook.hookcount=1;
+
+		contour->headP[seg_minpeakContourLevel].value=0xffff;
+		contour->tailP[seg_minpeakContourLevel].value=0xffff;
+		segmentation_popQueue(&unsegmentHook, 0, &cur);
+		while(!(cur.row==0x3f && cur.col==0x3f))
+		{
+			int16 sig;
+			sig=imgarray->matrix[cur.row][cur.col];
 		
 			if(sig>seg_cfg_minPeak)
 			{
-				segmentation_pushQueue(contour, level+1, &curnode);
+				segmentation_pushQueue(contour, seg_minpeakContourLevel+1, &cur);
 			}
 			else
 			{
-				segmentation_pushQueue(contour, level, &curnode);
+				segmentation_pushQueue(contour, seg_minpeakContourLevel, &cur);
 			}
 		
-			segmentation_popQueue(&unsegmentHook, 0, &curnode);
+			segmentation_popQueue(&unsegmentHook, 0, &cur);
 		}
 	}
 
-	return level;
+	// step2: dial contour data
+	for(n=0;n<contour->hookcount;n++)
+	{
+		cur.row=contour->headP[n].feilds.nextRow;
+		cur.col=contour->headP[n].feilds.nextCol;
+
+		while(!(cur.row==0x3f&&cur.col==0x3f))
+		{
+	  		uint16 nbId;
+	  		for(nbId=0;nbId<4;nbId++)
+	  		{
+				if(RES_OK==segmentation_getNeighbourPosition(nbId,&cur,&nb))
+				{
+					if(segLabelImage.matrix[nb.row][nb.col].value==0xffff)
+					{
+						segLabelImage.matrix[nb.row][nb.col].feilds.lable=OBJ_INIT;
+						segmentation_pushQueue(seghook,SEGHOOKID_DIA,&nb);
+					}
+				}
+	  		}
+
+	  
+	  		nxt.row=segLabelImage.matrix[cur.row][cur.col].feilds.nextRow;
+	  		nxt.col=segLabelImage.matrix[cur.row][cur.col].feilds.nextCol;
+
+	  		cur=nxt;
+	
+	
+  		}
+	}
+
+	//step3: search background
+	for(row=0;row<CFG_NUM_2D_ROWS;row++)
+	{
+		for(col=0;col<CFG_NUM_2D_COLS;col++)
+		{
+			if(segLabelImage.matrix[row][col].value==0xffff)
+			{
+				cur.col=col;
+				cur.row=row;
+				segmentation_pushQueue(seghook,SEGHOOKID_BCKGND, &cur);
+			}
+		}
+	}
+
+	return RES_OK;
 }
+
 //-----------------------------------------------------------------------------
 // Function Name:	
 // Description:		
@@ -796,7 +804,7 @@ static void segmentation_doMergeblobs(uint16 merged, uint16 killed,hook_t* segho
 // Function Name:	
 // Description:		
 //-----------------------------------------------------------------------------
-static int16 segmentation_mergeblobs(touchImage_t* imgarray,int16* conTable,uint16 segCount, hook_t* seghook)
+static int16 segmentation_mergeblobs(touchImage_t* imgarray,int16* conTable,hook_t* seghook)
 {
 	int16 (*damTab)[10]; // when col>row, contain sum of dam, when col<row, contain merge coef
 	uint16 newCount, maxCoef;
@@ -805,7 +813,7 @@ static int16 segmentation_mergeblobs(touchImage_t* imgarray,int16* conTable,uint
 	uint16 mergedId,killedId;
 
 	damTab=(int16(*)[10])conTable;
-	newCount = segCount;
+	newCount = segLable;
 	mergedId = 0xffff;
 	while(1)// warning infinit loop
 	{
@@ -911,7 +919,7 @@ static int16 segmentation_mergeblobs(touchImage_t* imgarray,int16* conTable,uint
 		}
 
 
-		if((newCount>0)&&(maxCoef>seg_cfg_mergeCoef))
+		if((newCount>0)&&(maxCoef<seg_cfg_mergeCoef))
 		{
 			//merge
 			segmentation_doMergeblobs(mergedId,killedId,seghook);
@@ -919,6 +927,35 @@ static int16 segmentation_mergeblobs(touchImage_t* imgarray,int16* conTable,uint
 		}
 		else
 		{
+			if(0xffff!=seghook->headP[SEGHOOKID_DAM].value)
+			{
+				segmentation_popQueue(seghook, SEGHOOKID_DAM, &curDam);
+				while(!(curDam.row==0x3f && curDam.col==0x3f))
+				{
+					int16 maxsig=-300;
+					nbLable=CFG_MAX_OBJECTS;
+					for(nbId=0;nbId<4;nbId++)
+					{
+					
+						if(RES_OK==segmentation_getNeighbourPosition(nbId,&curDam,&nb))
+						{
+							if((maxsig<imgarray->matrix[nb.row][nb.col])&&(segLabelImage.matrix[nb.row][nb.col].feilds.lable<CFG_MAX_OBJECTS))
+							{
+								maxsig = imgarray->matrix[nb.row][nb.col];
+								nbLable = segLabelImage.matrix[nb.row][nb.col].feilds.lable;
+							}
+						}
+					}
+					if(nbLable<CFG_MAX_OBJECTS)
+					{
+						segLabelImage.matrix[curDam.row][curDam.col].feilds.lable=nbLable;
+						segmentation_pushQueue(seghook, nbLable, &curDam);
+					}
+
+					segmentation_popQueue(seghook, SEGHOOKID_DAM, &curDam);
+					
+				}
+			}
 			break;
 		}
 
@@ -956,8 +993,20 @@ static int16 segmentation_mergeblobs(touchImage_t* imgarray,int16* conTable,uint
    seg_cfg_mergeCoef = cfgPtr->segMergeCoef;
    seg_cfg_contourRes= (cfgPtr->segResolution>SEGCONTOURMAX)?SEGCONTOURMAX:cfgPtr->segResolution;
 
-   seg_contourBin= (seg_cfg_maxSig+seg_cfg_contourRes>>1)/seg_cfg_contourRes;
-   seg_contourBin=(seg_contourBin<1)?1:seg_contourBin;
+   seg_contourBin=(uint16)((seg_cfg_maxSig-seg_cfg_minSig)%seg_cfg_contourRes);
+   
+   if(seg_contourBin)
+   {
+	   seg_contourBin=(uint16)(1+((seg_cfg_maxSig-seg_cfg_minSig)/seg_cfg_contourRes));
+   }
+   else
+   {
+	   seg_contourBin=(uint16)((seg_cfg_maxSig-seg_cfg_minSig)/seg_cfg_contourRes);
+   }
+   
+   seg_minpeakContourLevel=((seg_cfg_minPeak-seg_cfg_minSig)+seg_contourBin>>1)/seg_contourBin;
+   
+   if(seg_minpeakContourLevel>seg_cfg_contourRes) seg_minpeakContourLevel=seg_cfg_contourRes;
 
  }
 
@@ -990,62 +1039,9 @@ void segmentation_init(void)
 // Function Name:	segmenting_init
 // Description:		
 //-----------------------------------------------------------------------------
-static segmentLabel_ptr segmentation_searchRoi(touchImage_t* imgarray, hook_t* seghook)
-{
-	uint8 row,col;
-	segnode_t node;
-
-	// clear seg report
-	segmentation_resetReport();
-
-	for(row=0;row<CFG_NUM_2D_ROWS;row++)
-	{
-		for(col=0;col<CFG_NUM_2D_COLS;col++)
-		{
-			int16 sig;
-
-			sig = imgarray->matrix[row][col];
-			if(sig>seg_cfg_minSig)
-			{		
-				node.col=col;
-				node.row=row;
-				segLabelImage.matrix[node.row][node.col].feilds.lable=OBJ_INIT;
-				segmentation_pushQueue(seghook,SEGHOOKID_UNSEG, &node);
-			}
-		}
-
-	}
-	// dialation
-
-	segmentation_dilateRoi(seghook);
-
-	// search background
-
-	for(row=0;row<CFG_NUM_2D_ROWS;row++)
-	{
-		for(col=0;col<CFG_NUM_2D_COLS;col++)
-		{
-			if(segLabelImage.matrix[row][col].value==0xffff)
-			{
-				node.col=col;
-				node.row=row;
-				segmentation_pushQueue(seghook,SEGHOOKID_BCKGND, &node);
-			}
-		}
-	}
-
-	
-	return segBackground;
-}
-
-
-//-----------------------------------------------------------------------------
-// Function Name:	segmenting_init
-// Description:		
-//-----------------------------------------------------------------------------
 uint16 segmentation_segments(touchImage_t* imgarray)
 {
-	uint16 minpeakLevel,segmentCount;
+	uint16 segmentCount;
 	segmentLabel_t headContour[SEGCONTOURMAX],localBuffer[SEGCONTOURMAX];
 	segmentLabel_t tailSegment[SEGHOOKSIZE];
 	hook_t contour,segments;
@@ -1059,20 +1055,19 @@ uint16 segmentation_segments(touchImage_t* imgarray)
  	segments.headP=seghooks;
  	segments.tailP=tailSegment;
 	segments.hookcount=SEGHOOKSIZE;
-
+// reset buffer
+	segmentation_resetReport();
 	segmentation_resetHooks(&contour);
 	segmentation_resetHooks(&segments);
- // search ROI
- 	segmentation_searchRoi(imgarray,&segments);
  // sort by contour
- 	minpeakLevel=segmentation_sortbyContour(imgarray, &segments, &contour);
+ 	segmentation_sortbyContour(imgarray, &segments, &contour);
  // watershed contour
-	segmentCount=segmentation_searchBlobByWatershed(&contour, &segments, minpeakLevel);
- // merge
+	segmentCount=segmentation_searchBlobByWatershed(&contour, &segments);
+ // merge over-segments
  	memset(localBuffer,0,sizeof(localBuffer));
- 	segmentCount=segmentation_mergeblobs(imgarray,(int16*)localBuffer,segmentCount, &segments);
- // sort dilated node
- 	segmentation_sortDilatedRoiToSegments(&segments);
+ 	segmentCount=segmentation_mergeblobs(imgarray,(int16*)localBuffer, &segments);
+ // dilation
+ 	segmentation_sortDilatedRoiToSegments(imgarray,&segments);
 	return segmentCount;
 }
 
