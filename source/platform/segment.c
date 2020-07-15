@@ -16,7 +16,6 @@
 // Macro Definition
 //=============================================================================
 
-#define SEGHOOKSIZE  (CFG_MAX_OBJECTS+3)
 #define SEGCONTOURMAX (100)
 
 //=============================================================================
@@ -46,6 +45,9 @@ static segmentLabel_t * segBackground;
 static segmentLabel_t * segUnSegmented;
 static segmentLabel_t * segDam;
 
+static uint8p8 segCentroidRow[CFG_MAX_OBJECTS];
+static uint8p8 segCentroidCol[CFG_MAX_OBJECTS];
+static int32 segSigSum[CFG_MAX_OBJECTS];
 
 
 static int16 seg_cfg_maxSig;
@@ -68,8 +70,9 @@ static int16 N4[4]={-CFG_COL,-1,1,CFG_COL};
 //=============================================================================
 // Local (Static) Functions Declaration
 //=============================================================================
+static segmentLabel_ptr segmentation_searchRoi(touchImage_t* imgarray, hook_t* seghook);
 static void segmentation_resetReport(void);
-static uint16 segmentation_sortbyContour(touchImage_t* imgarray, segmentLabel_ptr unsegment, hook_t* contour);
+static uint16 segmentation_sortbyContour(touchImage_t* imgarray, hook_t* seghook, hook_t* contour);
 static void segmentation_fillFlood(segnode_t * seedNode, uint16 lableId,segmentLabel_t * src, hook_t * segments, uint16 option );
 static void segmentation_resetHooks(hook_t* hook);
 static int16 segmentation_pushQueue(hook_t* hooks,  uint16 hookid, segnode_t* node);
@@ -77,31 +80,11 @@ static int16 segmentation_removeQueue(hook_t* hooks,uint16 hookid,segnode_t* nod
 static int16 segmentation_popQueue(hook_t* hooks,uint16 hookid,segnode_t* node );
 static int16 segmentation_getNeighbourPosition(uint16 neighbour, segnode_t* curNode, segnode_t* nbNode);
 static int16 segmentation_searchBlobByWatershed(hook_t* contour,hook_t* segments,uint16 minpeaklevel);
-
-
-#if 0
-static void segmenting_searchROI(int16* imgarray, uint16 imgsize);
-static int16 segmenting_pushObjLink(uint16 objid, uint16 pos, int16* imgarray);
-static int16 segmenting_pushDamLink(uint16 damflag, uint16 pos, int16* imgarray);
-static void segmenting_fifoInit(segQue_t* fifo);
-static int16 segmenting_fifoPop(segQue_t * fifo);
-static int16 segmenting_fifoPush(segQue_t *fifo, uint16 p);
-static uint16 segmenting_contourbinCal(int16 minsig, uint16 contourlevel);
-static void segmenting_contourSorting(int16 * imgarray, uint16 imgsize,
-                                                segQue_t* contourarray,uint16 arraysize, 
-                                                uint16 contourbin, 
-                                                int16 minsig);
-static void segmenting_watershedCal(int16 * imgarray, uint16 imgsize,
-                                             segQue_t * contourarray, uint16 arraysize,
-                                             int16 minpeak);
-
-static void segmenting_mergeObj(uint16 liveObj, uint16 deadObj, uint16 deaddam);
-
-static uint16 segmenting_ShouldbeMerge(int16* imgarray, uint16 imgsize, 
-	                                            uint16 damid,uint16*bloblist);
-static void segmenting_moresegment(int16* imgarray, uint16 imgsize);
-#endif
-
+static int16 segmentation_mergeblobs(touchImage_t* imgarray,int16* conTable,uint16 segCount, hook_t* seghook);
+static uint16 segmentation_calcMergeCoef(uint16 i, uint16 j,uint16 damsum);
+static void segmentation_doMergeblobs(uint16 merged, uint16 killed,hook_t* seghook);
+static void segmentation_calcSigsumAndCentroid(touchImage_t* imgarray,uint16 i);
+static void segmentation_dilateRoi(hook_t* roi);
 
 //-----------------------------------------------------------------------------
 // Function Name:	
@@ -146,6 +129,8 @@ static int16 segmentation_pushQueue(hook_t* hooks,  uint16 hookid, segnode_t* no
  
   head=&(hooks->headP[hookid]);
   tail=&(hooks->tailP[hookid]);
+  segLabelImage.matrix[node->row][node->col].feilds.nextRow=0x3f;
+  segLabelImage.matrix[node->row][node->col].feilds.nextCol=0x3f;
   
   if(0xffff!=head->value)
   {
@@ -243,7 +228,7 @@ static int16 segmentation_removeQueue(hook_t* hooks,uint16 hookid,segnode_t* nod
 static int16 segmentation_popQueue(hook_t* hooks,uint16 hookid,segnode_t* node )
 {
 	segmentLabel_ptr head;
-	uint16 res=RES_OK;
+	int16 res=RES_OK;
 	
 	 if (hookid>=hooks->hookcount)
 	 {
@@ -420,27 +405,16 @@ static void segmentation_fillFlood(segnode_t * seedNode, uint16 lableId,segmentL
 // Function Name:	segmenting_init
 // Description:		
 //-----------------------------------------------------------------------------
-static void segmentation_dilateSegments(hook_t* segments)
+static void segmentation_dilateRoi(hook_t* seghook)
 {
-  segmentLabel_t dilationHead, dilationTail;
-  hook_t dilation;
-  uint16 i;
-  dilation.headP=&dilationHead;
-  dilation.tailP=&dilationTail;
-  dilation.hookcount=1;
-  
-  for(i=0;i<segments->hookcount;i++)
-  {
-  	
 	uint16 dilationCount;
-	segnode_t cur,nb;
-	
-	if(segments->headP[i].value==0xffff) break;
+	segnode_t cur,nb,nxt;
 
-	cur.row=segments->headP[i].feilds.nextRow;
-	cur.col=segments->headP[i].feilds.nextCol;
+
+	cur.row=seghook->headP[SEGHOOKID_UNSEG].feilds.nextRow;
+	cur.col=seghook->headP[SEGHOOKID_UNSEG].feilds.nextCol;
 	dilationCount=0;
-	segmentation_resetHooks(&dilation);
+
 	while(!(cur.row==0x3f&&cur.col==0x3f))
 	{
 	  uint16 nbId;
@@ -448,89 +422,63 @@ static void segmentation_dilateSegments(hook_t* segments)
 	  {
 		if(RES_OK==segmentation_getNeighbourPosition(nbId,&cur,&nb))
 		{
-			if(segLabelImage.matrix[nb.row][nb.col].feilds.lable==OBJ_INIT)
+			if(segLabelImage.matrix[nb.row][nb.col].value==0xffff)
 			{
-				segmentation_pushQueue(&dilation,0,&nb);
+				segLabelImage.matrix[nb.row][nb.col].feilds.lable=OBJ_INIT;
+				segmentation_pushQueue(seghook,SEGHOOKID_DIA,&nb);
 				dilationCount++;
 			}
 		}
 	  }
 
+	  
+	  nxt.row=segLabelImage.matrix[cur.row][cur.col].feilds.nextRow;
+	  nxt.col=segLabelImage.matrix[cur.row][cur.col].feilds.nextCol;
 
-	  cur.row=segLabelImage.matrix[cur.row][cur.col].feilds.nextRow;
-	  cur.col=segLabelImage.matrix[cur.row][cur.col].feilds.nextCol;
-		
-	}
-
-	
-	if(dilationCount>0)
-	{
-	  cur.row=dilationHead.feilds.nextRow;
-	  cur.col=dilationHead.feilds.nextCol;
-	  segmentation_pushQueue(segments,i,&cur);
-	}
+	  cur=nxt;
 	
 	
   }
 }
 
-
-#if 0
 //-----------------------------------------------------------------------------
 // Function Name:	segmenting_init
 // Description:		
 //-----------------------------------------------------------------------------
-static void segmentation_searchSegments(touchImage_t* imgarray, hook_t * segments)
+static void segmentation_sortDilatedRoiToSegments(hook_t* seghook)
 {
-	int16 i; 
-	uint16 minlevel,level;
-	uint16 row,col;
-	segnode_t cur;
-	segmentLabel_t roihead[SEGHOOKSIZE], fifohead, fifotail;
-	hook_t fifo;
-	hook_t contour;
+	segnode_t cur,nb;
+	uint16 lab,nbId;
 
-	// create ROI contour link
-	contour.headP=&roihead[SEGHOOKSIZE];
-	contour.hookcount=SEGHOOKSIZE;
-	memcopy(roihead,seghooks,sizeof(roihead));
-
-	// create a FIFO link
-	fifo.headP=&fifohead;
-	fifo.tailP=&fifotail;
-	fifo.hookcount=1;
-	segmentation_resetHooks(&fifo);
-
-	minlevel = 1+(seg_cfg_minPeak-seg_cfg_minSig)>>4;
-
-
-	for(i=SEGHOOKSIZE-1;i>minlevel;i--)
-	{
-		if(roihead[i].value==0xffff) continue;
-		
-		segmentation_popQueue(&contour,i,&cur);
-
-		while(!(cur.row==0x3f&&cur.col==0x3f))
-		{
-
-			segmentation_fillFlood(&cur,segLable++,imgarray,contour,1,segments,fifo);		
-			segmentation_popQueue(&contour,i,&cur);
-
-		}
-	}
-
-	segmentation_popQueue(&contour,minlevel,&cur);
+	segmentation_popQueue(seghook, SEGHOOKID_DIA, &cur);
 
 	while(!(cur.row==0x3f&&cur.col==0x3f))
 	{
-		segmentation_fillFlood(&cur,segLable++,imgarray,contour,1,segments,fifo);
-		segmentation_popQueue(&contour,minlevel,&cur);
+		for(nbId=0;nbId<4;nbId++)
+		{
+			if(RES_OK==segmentation_getNeighbourPosition(nbId,&cur,&nb))
+			{
+				lab=segLabelImage.matrix[nb.row][nb.col].feilds.lable;
+				if(lab<CFG_MAX_OBJECTS) break;
+			}
+		}
+		
+		if(lab<CFG_MAX_OBJECTS)
+		{
+			segLabelImage.matrix[cur.row][cur.col].feilds.lable=lab;
+			segmentation_pushQueue(seghook, lab, &cur);
+		}
+		else
+		{
+			segmentation_pushQueue(seghook, SEGHOOKID_BCKGND, &cur);
+		}
+		segmentation_popQueue(seghook, SEGHOOKID_DIA, &cur);
 	}
 
-
-  
 }
-#endif
+
+
+
 //-----------------------------------------------------------------------------
 // Function Name:	segmenting_init
 // Description:		
@@ -695,24 +643,15 @@ static int16 segmentation_searchBlobByWatershed(hook_t* contour,hook_t* segments
   
 }
 
-
-//////////////////////////////////////////////////////////////////////////////////////////////
-
-
-
 //-----------------------------------------------------------------------------
 // Function Name:	segmentation_sortbyContour
 // Description:		contour sorting unsegment node. if the node>seg_cfg_minSig
 //  rasie its contour level by 1
 //-----------------------------------------------------------------------------
-static uint16 segmentation_sortbyContour(touchImage_t* imgarray, segmentLabel_ptr unsegment, hook_t* contour)
+static uint16 segmentation_sortbyContour(touchImage_t* imgarray, hook_t* seghook, hook_t* contour)
 {
 	uint16 bin,level,n;
 	segnode_t curnode;
-	hook_t unsegmentHook;
-
-	unsegmentHook.headP=unsegment;
-	unsegmentHook.hookcount=1;
 
 	bin=(uint16)((seg_cfg_maxSig-seg_cfg_minSig)%seg_cfg_contourRes);
 
@@ -729,7 +668,7 @@ static uint16 segmentation_sortbyContour(touchImage_t* imgarray, segmentLabel_pt
 
 	if(level>seg_cfg_contourRes) level=seg_cfg_contourRes;
 
-	segmentation_popQueue(&unsegmentHook, 0, &curnode);
+	segmentation_popQueue(seghook, SEGHOOKID_UNSEG, &curnode);
 
 	while(!(curnode.row==0x3f && curnode.col==0x3f))
 	{
@@ -743,14 +682,16 @@ static uint16 segmentation_sortbyContour(touchImage_t* imgarray, segmentLabel_pt
 
 		segmentation_pushQueue(contour, n, &curnode);
 
-		segmentation_popQueue(&unsegmentHook, 0, &curnode);
+		segmentation_popQueue(seghook, SEGHOOKID_UNSEG, &curnode);
 		
 	}
 
 	// at minpeak level, there are some sig bigger than minpeak, push it to the up level.
 	if(level<seg_cfg_contourRes-1)
 	{
+		hook_t unsegmentHook;
 		unsegmentHook.headP=&contour->headP[level];
+		unsegmentHook.hookcount=1;
 		segmentation_popQueue(&unsegmentHook, 0, &curnode);
 		while(!(curnode.row==0x3f && curnode.col==0x3f))
 		{
@@ -772,568 +713,222 @@ static uint16 segmentation_sortbyContour(touchImage_t* imgarray, segmentLabel_pt
 
 	return level;
 }
-
-
 //-----------------------------------------------------------------------------
-// Function Name:	segmentation_sortbyContour
-// Description:		contour sorting unsegment node. if the node>seg_cfg_minSig
-//  rasie its contour level by 1
+// Function Name:	
+// Description:		
 //-----------------------------------------------------------------------------
-
-
-
-
-#if 0
-
-//-----------------------------------------------------------------------------
-// Function Name:	segmenting_pushObjLink
-// Description:	 push a piexl to a specific object	
-//-----------------------------------------------------------------------------
-static int16 segmenting_pushObjLink(uint16 objid, uint16 pos, int16* imgarray)
+static void segmentation_calcSigsumAndCentroid(touchImage_t* imgarray,uint16 i)
 {
-  objLink_t* obj_ptr ;
-  labMap_t*  lab_ptr ;
+	int32 sigSum, centroidRow, centroidCol;
+	segnode_t curnode,nextnode;
 
-  if(objid>=MAX_OBJECTS)
-  {
-     return -1 ;
-  }
-  obj_ptr = &segPublicinfo.objLink[objid];
-  lab_ptr = &segPublicinfo.lableMap[0];
-  if (0==obj_ptr->linksize)
-  {
-    obj_ptr->headP = pos;
-	obj_ptr->tailP = pos;
-	obj_ptr->peakP = pos;
-	segPublicinfo.objCount+=1;
-  }
-  else
-  {
-    uint16 offset = obj_ptr->tailP;
-	lab_ptr[offset].nextP=pos;
-	obj_ptr->tailP = pos;
-	if(imgarray[obj_ptr->peakP]<imgarray[pos])
+	curnode.row=segObjects[i].feilds.nextRow;
+	curnode.col=segObjects[i].feilds.nextCol;
+	sigSum=0;
+	centroidCol=0;
+	centroidRow=0;
+	while(!(curnode.row==0x3f&&curnode.col==0x3f))
 	{
-       obj_ptr->peakP = pos;
+		sigSum+=imgarray->matrix[curnode.row][curnode.col];
+		centroidRow+=curnode.row*imgarray->matrix[curnode.row][curnode.col];
+		centroidCol+=curnode.col*imgarray->matrix[curnode.row][curnode.col];
+
+		nextnode.row=segLabelImage.matrix[curnode.row][curnode.col].feilds.nextRow;
+		nextnode.col=segLabelImage.matrix[curnode.row][curnode.col].feilds.nextCol;
+
+		curnode=nextnode;
 	}
-  }
-  lab_ptr[pos].lab = objid;
-  obj_ptr->linksize+=1;
 
-  return (int16)obj_ptr->linksize;
-  
-}
+	segSigSum[i]=sigSum;
+	segCentroidCol[i]=(uint8p8)((centroidCol<<8)/sigSum);
+	segCentroidRow[i]=(uint8p8)((centroidRow<<8)/sigSum);
 
-//-----------------------------------------------------------------------------
-// Function Name:	segmenting_pushDamLink
-// Description:	put a pixel to a specific dam 
-//-----------------------------------------------------------------------------
-static int16 segmenting_pushDamLink(uint16 damflag, uint16 pos, int16* imgarray)
-{
-  uint16 isfound=0;
-  uint16 i;
-  damLink_t* damptr ;
-  labMap_t*  lab_ptr ;
-  if(0==damflag)
-  {
-    return -1;
-  }
-  damptr=&segPublicinfo.damLink[0];
-  lab_ptr = &segPublicinfo.lableMap[0];
-  for(i=0; i<MAX_OBJECTS; i++)
-  {
-     if(damflag==damptr[i].flagbits)
-     {
-		isfound=1;
-		break;
-	 }
-  }
- // if no existing dam, assign a new hook.
-  if(!isfound)
-  {
-    for(i=0;i<MAX_OBJECTS;i++)
-    {
-       if(0==damptr[i].flagbits)
-       {
-         isfound=1;
-		 break;
-	   }
-	}
-  }
-
-  if(!isfound)
-  {
-    return -1;
-  }
-
-  if(!damptr[i].linksize)
-  {
-    damptr[i].headP=pos;
-	damptr[i].tailP=pos;
-	damptr[i].peakP=pos;
-	segPublicinfo.damCount+=1;
-  }
-  else
-  {
-    uint16 offset = damptr[i].tailP;
-	lab_ptr[offset].nextP=pos;
-	damptr[i].tailP=pos;
-	if(imgarray[damptr[i].peakP]<imgarray[pos])
-    {
-       damptr[i].peakP = offset;
-	}
-  }
-  damptr[i].flagbits = damflag;
-  damptr[i].linksize +=1;
-
-  return (int16)damptr[i].linksize;
-
-  
 }
 
 //-----------------------------------------------------------------------------
 // Function Name:	
-// Description:	initial a FIFO	
+// Description:		
 //-----------------------------------------------------------------------------
-static void segmenting_fifoInit(segQue_t* fifo)
+static uint16 segmentation_calcMergeCoef(uint16 i, uint16 j,uint16 damsum)
 {
-  fifo->linksize=0;
-}
+	uint8p8 deltaRow, deltaCol;
+	uint32 coef;
 
+	deltaRow=(segCentroidRow[i]>segCentroidRow[j])?(segCentroidRow[i]-segCentroidRow[j]):(segCentroidRow[j]-segCentroidRow[i]);
+	deltaCol=(segCentroidCol[i]>segCentroidCol[j])?(segCentroidCol[i]-segCentroidCol[j]):(segCentroidCol[j]-segCentroidCol[i]);
 
-//-----------------------------------------------------------------------------
-// Function Name:	
-// Description:	pop the fifo and get a element	
-//-----------------------------------------------------------------------------
-static int16 segmenting_fifoPop(segQue_t * fifo)
-{
-  uint16 pop;
-  labMap_t*  lab_ptr;
+	coef=(deltaRow*deltaRow+deltaCol*deltaCol)>>16;
 
-  if(!fifo->linksize)
-  	return -1;
-  
-  pop = fifo->headP;
-  lab_ptr = &segPublicinfo.lableMap[0];
+	coef*=((segSigSum[i]/damsum)+(segSigSum[j]/damsum));
 
-  fifo->linksize-=1;
-
-  if(fifo->headP == fifo->tailP)
-  	fifo->linksize=0;
-  else
-  	fifo->headP= lab_ptr[pop].nextP;
-
-  return pop;
-  
-}
-
-//-----------------------------------------------------------------------------
-// Function Name:	
-// Description:		push a element into a fifo
-//-----------------------------------------------------------------------------
-static int16 segmenting_fifoPush(segQue_t *fifo, uint16 p)
-{
-  labMap_t*  lab_ptr = &segPublicinfo.lableMap[0];
-
-  if(!fifo->linksize)
-  {
-    fifo->headP=p;
-	fifo->tailP=p;
-  }
-  else
-  {
-    lab_ptr[fifo->tailP].nextP=p;
-	fifo->tailP = p;
-  }
-
-  fifo->linksize+=1;
-
-  return (int16)fifo->linksize;
+	coef =(coef>0xffff)?0xfffe:coef;
+	
+	return coef;
 }
 //-----------------------------------------------------------------------------
 // Function Name:	
 // Description:		
 //-----------------------------------------------------------------------------
-static uint16 segmenting_contourbinCal(int16 minsig, uint16 contourlevel)
+static void segmentation_doMergeblobs(uint16 merged, uint16 killed,hook_t* seghook)
 {
-   uint16 bin;
-
-   bin = (SATURATESIG-minsig);
-
-   bin +=(contourlevel>>1);
-
-   bin /=contourlevel;
-
-   //bin=((SATURATESIG-minsig)+(contourlevel>>1))/contourlevel;
-
-   bin=(bin<1)?1:bin;
-
-   return bin;
-}
-
-//-----------------------------------------------------------------------------
-// Function Name:	
-// Description:		sort a img by contour with a specific bin
-//-----------------------------------------------------------------------------
-static void segmenting_contourSorting(int16 * imgarray, uint16 imgsize,
-                                                segQue_t* contourarray,uint16 arraysize, 
-                                                uint16 contourbin, 
-                                                int16 minsig)
-{
-  uint16 i;
-
-  for(i=0;i<imgsize;i++)
-  {
-    int16 sig;
-	uint16 n;
-	sig = imgarray[i];
-	if(sig<minsig) continue;
-	n=((sig-minsig)+(contourbin>>1))/contourbin;
-	n=(n+1>arraysize)?n=(n+1>arraysize)-1:n;
-
-	segmenting_fifoPush(&contourarray[n],i);
+	segnode_t curnode,nextnode;
 	
-  }
-
-}
-
-
-//-----------------------------------------------------------------------------
-// Function Name:	
-// Description:		watershed algorithm
-//-----------------------------------------------------------------------------
-static void segmenting_watershedCal(int16 * imgarray, uint16 imgsize,
-                                             segQue_t * contourarray, uint16 arraysize,
-                                             int16 minpeak)
-{
-  
-  segQue_t fifo;
-  segQue_t* contourptr;
-  uint16 lab_cur=0;
-//  uint16 damflag=0;
-  int16 loop;
-  labMap_t*  lab_ptr;
-
-  segmenting_fifoInit(&fifo);
-  
-  lab_ptr = &segPublicinfo.lableMap[0];
-  
-  for(loop=(int16)(arraysize-1);loop>0;loop--)
-  {
-    uint16 linksize;
-	uint16 i,nextP;
+	curnode.row=segObjects[killed].feilds.nextRow;
+	curnode.col=segObjects[killed].feilds.nextCol;
 	
-   
-      contourptr=&contourarray[loop];
-	  linksize = contourptr->linksize;
-      nextP = contourptr->headP;
-	  for(i=0;i<linksize;i++)
-	  {
-        uint16 curID,n;
-		
-		curID = nextP;
-		nextP=lab_ptr[curID].nextP;
-		lab_ptr[curID].lab = OBJ_MASK;
-
-		for(n=0;n<4;n++)// firstly, find the pixel which has object label in its neighbour.
-	    {
-          int16 nidx;
-
-		  if(lab_ptr[curID].edge==SEG_EDGE_L && 1==n) continue;
-		  if(lab_ptr[curID].edge==SEG_EDGE_R && 2==n) continue;
-		  nidx=(int16)curID+N4[n];
-		  if(nidx<0 || nidx>=(int16)(imgsize-1)) continue;
-
-		  if(lab_ptr[nidx].lab<OBJ_DAM)
-		  {
-             segmenting_fifoPush(&fifo, curID);
-			 lab_ptr[curID].lab=OBJ_INQE;
-			 break;
-		  }  
-		} // checking the neighbourhood to find if there is a object. if yes, 
-	  }
-	  // label the one which has object in its neighbour. if some new created, label it after the ones found early have been labled.
-	  while(fifo.linksize)
-	  {
-          int16 curID,n;
-		  uint16 damflag;
-		  curID = segmenting_fifoPop(&fifo);
-		  if(curID<0) break;
-		  damflag=0;
-		  for(n=0;n<4;n++)// searching the neighbour of the current sensor
-		  {
-            int16 nidx;
-			uint16 cur_lab,nei_lab;
-			if(lab_ptr[curID].edge==SEG_EDGE_L && 1==n) continue;
-			if(lab_ptr[curID].edge==SEG_EDGE_R && 2==n) continue;
-			nidx=(int16)curID+N4[n];
-			if(nidx<0 || nidx>=(int16)(imgsize-1)) continue;
-
-			cur_lab=lab_ptr[curID].lab;// cur lab must be updated every time when looping, because it could be changed at previous looping.
-			nei_lab=lab_ptr[nidx].lab;
-
-			if(nei_lab<OBJ_DAM)// the neighbour is a obj
-			{
-				if ((cur_lab==OBJ_INQE)||(cur_lab==OBJ_DAM2))//it is labled same.
-				   lab_ptr[curID].lab=nei_lab;
-				else if ((cur_lab<OBJ_DAM)&&(cur_lab!=nei_lab))// it is labed as DAM for it was labed early by another neighbour.
-				{
-				   lab_ptr[curID].lab=OBJ_DAM;
-				   damflag=(1<<curID)|(1<<nidx);
-				}
-				
-			}
-			else if(nei_lab==OBJ_DAM) // the neighbour is watershed/dam
-			{
-               if(cur_lab==OBJ_INQE) // it is labled as DAM2. it isn't a dam, but it is near to a dam. it could be changed by other obj label.
-               {
-                  lab_ptr[curID].lab=OBJ_DAM2;
-			   }
-			}
-			else if(nei_lab==OBJ_MASK)// the neighbour has no special label but be at same contour level.
-			{                   
-               lab_ptr[nidx].lab=OBJ_INQE;
-			   segmenting_fifoPush(&fifo, nidx);
-			}
-			
-		  }
-
-		  if(lab_ptr[curID].lab<OBJ_DAM)
-		  	segmenting_pushObjLink(lab_ptr[curID].lab, curID, imgarray);
-		  else if(lab_ptr[curID].lab==OBJ_DAM)
-		  	segmenting_pushDamLink(damflag, curID, imgarray);
-		  
-	 }// widefirst searching
-
-
-	  
-   //here, no adjancent label is found, so assign a new one
-      nextP = contourptr->headP;
-      for(i=0;i<linksize;i++)
-      {
-        uint16 curID;
-		curID=nextP;
-		nextP=lab_ptr[curID].nextP;
-
-		if(imgarray[curID]<minpeak) continue;
-
-		if((lab_ptr[curID].lab==OBJ_MASK)||(lab_ptr[curID].lab==OBJ_DAM2))
-	    {
-           lab_ptr[curID].lab=lab_cur;
-		   segmenting_pushObjLink(lab_ptr[curID].lab, curID, imgarray);
-
-		   segmenting_fifoPush(&fifo, curID);
-
-		   while(fifo.linksize)
-		   {
-		      uint16 curID, n;
-              curID=segmenting_fifoPop(&fifo);
-             // Wide First Search. checking the neighbour if it can be labled
-			  for(n=0;n<4;n++)
-			  {
-                int16 nidx;
-				if(lab_ptr[curID].edge==SEG_EDGE_L && 1==n) continue;
-				if(lab_ptr[curID].edge==SEG_EDGE_R && 2==n) continue;
-				nidx=(int16)curID+N4[n];
-				if(nidx<0 || nidx>=(int16)(imgsize-1)) continue;
-				if(lab_ptr[nidx].lab==OBJ_MASK || lab_ptr[nidx].lab==OBJ_DAM2)
-				{
-                   lab_ptr[nidx].lab=lab_cur;
-				   segmenting_pushObjLink(lab_ptr[nidx].lab, nidx, imgarray);
-				   segmenting_fifoPush(&fifo, nidx);
-				}
-				
-			  }
-			  			  			  
-		   }
-
-		   if(lab_cur<MAX_OBJECTS) lab_cur+=1;
-		   
-		}
-
-	  }
-		
-			  
-	  
-  }
-  
-  
-}
-
-
-//-----------------------------------------------------------------------------
-// Function Name:	
-// Description:	merge two objects 
-//-----------------------------------------------------------------------------
-static void segmenting_mergeObj(uint16 liveObj, uint16 deadObj, uint16 deaddam)
-{
- objLink_t* liveptr =&segPublicinfo.objLink[liveObj] ;
- objLink_t* deadptr =&segPublicinfo.objLink[deadObj];
- labMap_t * labptr  =&segPublicinfo.lableMap[0];
- damLink_t* damptr  =&segPublicinfo.damLink[deaddam];
- uint16 i,len,idx,tailid;
-
- len = deadptr->linksize;
- idx=deadptr->headP;
- for(i=0;i<len;i++)
- {
-   labptr[idx].lab=liveObj;
-   idx=labptr[idx].nextP;
- }
- tailid=liveptr->tailP;
- labptr[tailid].nextP=deadptr->headP;
- liveptr->linksize+=deadptr->linksize;
- deadptr->linksize=0;
- segPublicinfo.objCount-=1;
-
- len= damptr->linksize;
- idx= damptr->headP;
- for(i=0;i<len;i++)
- {
-   labptr[idx].lab=liveObj;
-   idx=labptr[idx].nextP;
- }
- tailid = liveptr->tailP;
- labptr[tailid].nextP=damptr->headP;
- liveptr->linksize+=damptr->linksize;
- damptr->linksize=0;
- damptr->flagbits=0;
- segPublicinfo.damCount-=1;
- 
-}
-
-//-----------------------------------------------------------------------------
-// Function Name:	
-// Description:	check if two objects should be merged or not	
-//-----------------------------------------------------------------------------
-static uint16 segmenting_ShouldbeMerge(int16* imgarray, uint16 imgsize, uint16 damid,uint16*bloblist)
-{
-  
-  uint16 damflag = segPublicinfo.damLink[damid].flagbits;
-  objLink_t* objptr =&segPublicinfo.objLink[0];
-  labMap_t * labptr  =&segPublicinfo.lableMap[0];
-  uint16 offset;
-  uint16 shift;
-  uint16 n, idx;
-  int16 blobpeak,dampeak ;
-  
-  if (!damflag)
-  	return 0;
-  
-  offset=0;
-  shift=0;
-  while(damflag)
-  {
-     if(damflag&0x0001)
-     {
-        bloblist[offset]=shift;
-		offset++;
-	 }
-	 if(offset>1) break;
-	 damflag>>=1;
-	 shift++;
-  }
-  // id 0 containing small object, id 1 containing big one.
-  if((offset==2)&&(imgarray[objptr[bloblist[0]].peakP]>imgarray[objptr[bloblist[1]].peakP]))
-  {
-    uint16 tmp;
-
-	tmp=bloblist[1];
-	bloblist[1]=bloblist[0];
-	bloblist[0]=tmp;		
-  }
- // cal the average of peak and the max neighour to stand for blob sigal
-  idx = objptr[bloblist[0]].peakP;
-  blobpeak=0;
-  for(n=0;n<8;n++)
-  {
-   int16 nidx;
-    if((labptr[idx].edge==SEG_EDGE_L)&&(n==0||n==3||n==5)) continue;
-	if((labptr[idx].edge==SEG_EDGE_R)&&(n==2||n==4||n==7))continue;
-	nidx=(int16)idx+N9[n];
-	if(nidx<0 || nidx>=(int16)(imgsize-1)) continue;
-
-	if(labptr[nidx].lab==labptr[idx].lab)
+	while(!(curnode.row==0x3f&&curnode.col==0x3f))
 	{
-       if(imgarray[nidx]>blobpeak) blobpeak=imgarray[nidx];
+
+		segLabelImage.matrix[curnode.row][curnode.col].feilds.lable=merged;
+		nextnode.row=segLabelImage.matrix[curnode.row][curnode.col].feilds.nextRow;
+		nextnode.col=segLabelImage.matrix[curnode.row][curnode.col].feilds.nextCol;
+		curnode=nextnode;
 	}
-  }
-  blobpeak=(imgarray[idx]+blobpeak)/2;
-// cal the average of peak and subpeak to stand for the dam signal
-  idx=segPublicinfo.damLink[damid].peakP;
-  dampeak=0;
-  for(n=0;n<8;n++)
-  {
-    uint16 nidx;
-    if((labptr[idx].edge==SEG_EDGE_L)&&(n==0||n==3||n==5)) continue;
-	if((labptr[idx].edge==SEG_EDGE_R)&&(n==2||n==4||n==7))continue;
-	nidx=idx+N9[n];
-	if(nidx<0 || nidx>=(int16)(imgsize-1)) continue;
-	if(labptr[nidx].lab==labptr[idx].lab)
-	{
-       if(imgarray[nidx]>dampeak) dampeak=imgarray[nidx];
-	}		
-  }
-  dampeak=(imgarray[idx]+dampeak)/2;
- // if dam signal > 70% of blob's, merge the two blob
-  if(dampeak*10>blobpeak*7)
-  {
-    return 1;
-  }
-  else
-  {
-    return 0;
-  }
-  
+
+	segmentation_pushQueue(seghook, merged, &curnode);
+	
+	segObjects[killed].value=0xffff;
+
 }
+
+
 //-----------------------------------------------------------------------------
 // Function Name:	
-// Description:	more segment by merging.	
+// Description:		
 //-----------------------------------------------------------------------------
-static void segmenting_moresegment(int16* imgarray, uint16 imgsize)
+static int16 segmentation_mergeblobs(touchImage_t* imgarray,int16* conTable,uint16 segCount, hook_t* seghook)
 {
-  uint16 damcount, count, damidx;
+	int16 (*damTab)[10]; // when col>row, contain sum of dam, when col<row, contain merge coef
+	uint16 newCount, maxCoef;
+	segnode_t curDam,nextDam, nb;
+	uint16 i,j,nbId,nbLable;
+	uint16 mergedId,killedId;
 
-  count=1;
-  damcount =segPublicinfo.damCount;
-
-  for(damidx=0;damidx<MAX_OBJECTS;damidx++)
-  {
-    uint16 damflag;
-	
-    if(count>damcount) break;
-
-	damflag = segPublicinfo.damLink[damidx].flagbits;
-
-	if(damflag>0)
+	damTab=(int16(*)[10])conTable;
+	newCount = segCount;
+	mergedId = 0xffff;
+	while(1)// warning infinit loop
 	{
-	    uint16 ismerge=0;
-		uint16 bloblist[2];
-		
-        count+=1;
+		// calc Damsum and remove invalid dam
+		curDam.col=seghook->headP[SEGHOOKID_DAM].feilds.nextCol;
+		curDam.row=seghook->headP[SEGHOOKID_DAM].feilds.nextRow;
+		if(curDam.col==0x3f && curDam.row==0x3f)
+			break;
 
-		ismerge=segmenting_ShouldbeMerge(imgarray, imgsize,damidx,bloblist);
-
-		if(ismerge)
+		while(!(curDam.col==0x3f && curDam.row==0x3f))
 		{
-           segmenting_mergeObj(bloblist[1], bloblist[0], damidx);
+			i=j=0xffff; // i,j contain objects label in the neighbour. lable of i <=lable of j
+			for(nbId=0;nbId<4;nbId++)
+			{
+				if(RES_OK==segmentation_getNeighbourPosition(nbId,&curDam,&nb))
+				{
+					nbLable = segLabelImage.matrix[nb.row][nb.col].feilds.lable;
+					if(nbLable<CFG_MAX_OBJECTS)
+					{
+						if(i==0xffff)
+						{
+							i=nbLable;
+							j=i;
+						}
+						else if(j!=nbLable)
+						{
+							if(nbLable>i)
+							{
+								j=nbLable;
+							}
+							else
+							{
+								i=nbLable;
+							}
+
+							break;							
+						}
+						
+					}
+				}
+			}
+			// get next node
+			nextDam.row = segLabelImage.matrix[curDam.row][curDam.col].feilds.nextRow;
+			nextDam.col = segLabelImage.matrix[curDam.row][curDam.col].feilds.nextCol;
+			
+			if(i!=j)// the dam still has two object neighbours.
+			{
+				damTab[i][j]+=imgarray->matrix[curDam.row][curDam.col];
+
+			}
+			else if((i<CFG_MAX_OBJECTS)||(i==0xffff))// no objects or only one in the neighbour, the dam isn't vaild anymore, so remove it from Dam list and push it to segment list
+			{
+
+				segmentation_removeQueue(seghook, SEGHOOKID_DAM, &curDam);
+				segLabelImage.matrix[curDam.row][curDam.col].feilds.lable=i;
+				segmentation_pushQueue(seghook, i, &curDam);
+				
+			}
+			// update cur mode
+			curDam.row=nextDam.row;
+			curDam.col=nextDam.col;
+			
+		}
+
+		// if there is no dam left, break out;
+		if(0xffff==seghook->headP[SEGHOOKID_DAM].value) 
+			break;
+
+		// calc segments' sum and position for the object merge calcuation below
+		for(i=0;i<segLable;i++)
+		{
+		 	if((mergedId==0xffff)||(mergedId==i))
+		 	{
+				// 0xffff means update all of segments. or only update the target segment[i]
+				// calc sigsum
+				segmentation_calcSigsumAndCentroid(imgarray,i);
+			}
+		}
+
+		// calc coef of all dams and find the maxCoef
+		maxCoef=0;
+		for(i=0;i<segLable;i++)
+		{
+			for(j=0;j<i;j++)
+			{
+				if(killedId==i || killedId==j)// first of all, update killed node in the matrix
+				{
+					damTab[i][j]=0xffff;
+				}
+				if((damTab[i][j]!=0xffff)&&(mergedId==0xffff || mergedId==i||mergedId==j))
+				{
+					// calc coef
+					damTab[i][j]=segmentation_calcMergeCoef(i,j,damTab[j][i]);
+				}
+
+				if((damTab[i][j]!=0xffff)&&(maxCoef<damTab[i][j]))
+				{
+					maxCoef=damTab[i][j];
+					mergedId=j;
+					killedId=i;
+				}
+			}
+		}
+
+
+		if((newCount>0)&&(maxCoef>seg_cfg_mergeCoef))
+		{
+			//merge
+			segmentation_doMergeblobs(mergedId,killedId,seghook);
+			newCount-=1;
+		}
+		else
+		{
+			break;
 		}
 
 	}
-
-	 
-
-  }
-   
- 
+	
+	return newCount;
 }
 
 
-//-----------------------------------------------------------------------------
-// Function Name:	
-// Description:		
-//-----------------------------------------------------------------------------
-#endif
+
 //=============================================================================
 // Global Functions Definition (Declared in segment.h)
 //=============================================================================
@@ -1374,10 +969,10 @@ static void segmenting_moresegment(int16* imgarray, uint16 imgsize)
 //-----------------------------------------------------------------------------
 void segmentation_init(void)
 {  
-  segObjects 	 = &seghooks[0];            // 0~9th for object link  
-  segUnSegmented = &seghooks[SEGHOOKSIZE-3];// 10th for unsegment
-  segDam		 = &seghooks[SEGHOOKSIZE-2];// 11th for dam
-  segBackground  = &seghooks[SEGHOOKSIZE-1];// 12th for background
+  segObjects 	 = &seghooks[SEGHOOKID_OBJ];  // 0~9th for object link  
+  segUnSegmented = &seghooks[SEGHOOKID_UNSEG];// 10th for unsegment
+  segDam		 = &seghooks[SEGHOOKID_DAM];// 11th for dam
+  segBackground  = &seghooks[SEGHOOKID_BCKGND];// 12th for background
   
   segPublicinfo.lableMap=&segLabelImage;
   segPublicinfo.segments=segObjects; 
@@ -1395,27 +990,13 @@ void segmentation_init(void)
 // Function Name:	segmenting_init
 // Description:		
 //-----------------------------------------------------------------------------
-segmentLabel_ptr segmentation_searchRoi(touchImage_t* imgarray)
+static segmentLabel_ptr segmentation_searchRoi(touchImage_t* imgarray, hook_t* seghook)
 {
 	uint8 row,col;
 	segnode_t node;
-	segmentLabel_t backgroundTail,unsegmentTail;
-	hook_t	backgroundFifo,unsegmentFifo;
 
 	// clear seg report
 	segmentation_resetReport();
-
-
-	backgroundFifo.headP=segBackground;
-	backgroundFifo.tailP=&backgroundTail;
-	backgroundFifo.hookcount=1;
-	segmentation_resetHooks(&backgroundFifo);
-
-
-	unsegmentFifo.headP=segUnSegmented;
-	unsegmentFifo.tailP=&unsegmentTail;
-	unsegmentFifo.hookcount=1;
-	segmentation_resetHooks(&unsegmentFifo);
 
 	for(row=0;row<CFG_NUM_2D_ROWS;row++)
 	{
@@ -1424,19 +1005,36 @@ segmentLabel_ptr segmentation_searchRoi(touchImage_t* imgarray)
 			int16 sig;
 
 			sig = imgarray->matrix[row][col];
-			node.col=col;
-			node.row=row;
-			if(sig<seg_cfg_minSig)
-			{
-				segmentation_pushQueue(&backgroundFifo, 0, &node);
-			}
-			else
-			{
-				segmentation_pushQueue(&unsegmentFifo, 0, &node);
+			if(sig>seg_cfg_minSig)
+			{		
+				node.col=col;
+				node.row=row;
+				segLabelImage.matrix[node.row][node.col].feilds.lable=OBJ_INIT;
+				segmentation_pushQueue(seghook,SEGHOOKID_UNSEG, &node);
 			}
 		}
 
 	}
+	// dialation
+
+	segmentation_dilateRoi(seghook);
+
+	// search background
+
+	for(row=0;row<CFG_NUM_2D_ROWS;row++)
+	{
+		for(col=0;col<CFG_NUM_2D_COLS;col++)
+		{
+			if(segLabelImage.matrix[row][col].value==0xffff)
+			{
+				node.col=col;
+				node.row=row;
+				segmentation_pushQueue(seghook,SEGHOOKID_BCKGND, &node);
+			}
+		}
+	}
+
+	
 	return segBackground;
 }
 
@@ -1448,16 +1046,14 @@ segmentLabel_ptr segmentation_searchRoi(touchImage_t* imgarray)
 uint16 segmentation_segments(touchImage_t* imgarray)
 {
 	uint16 minpeakLevel,segmentCount;
-	segmentLabel_t headContour[SEGCONTOURMAX],tailContour[SEGCONTOURMAX];
+	segmentLabel_t headContour[SEGCONTOURMAX],localBuffer[SEGCONTOURMAX];
 	segmentLabel_t tailSegment[SEGHOOKSIZE];
-	segmentLabel_t unsegData;
 	hook_t contour,segments;
 
-	unsegData = *segUnSegmented;
 
  // create contour hook
 	contour.headP=headContour;
- 	contour.tailP=tailContour;
+ 	contour.tailP=localBuffer;
 	contour.hookcount=SEGCONTOURMAX;
  // create segments hook
  	segments.headP=seghooks;
@@ -1466,40 +1062,19 @@ uint16 segmentation_segments(touchImage_t* imgarray)
 
 	segmentation_resetHooks(&contour);
 	segmentation_resetHooks(&segments);
+ // search ROI
+ 	segmentation_searchRoi(imgarray,&segments);
  // sort by contour
-
- 	minpeakLevel=segmentation_sortbyContour(imgarray, &unsegData, &contour);
+ 	minpeakLevel=segmentation_sortbyContour(imgarray, &segments, &contour);
  // watershed contour
 	segmentCount=segmentation_searchBlobByWatershed(&contour, &segments, minpeakLevel);
  // merge
-
+ 	memset(localBuffer,0,sizeof(localBuffer));
+ 	segmentCount=segmentation_mergeblobs(imgarray,(int16*)localBuffer,segmentCount, &segments);
+ // sort dilated node
+ 	segmentation_sortDilatedRoiToSegments(&segments);
 	return segmentCount;
 }
-
-
-
-#if 0
-
-//-----------------------------------------------------------------------------
-// Function Name:	segmenting_segment
-// Description:	 main process of segment	
-//-----------------------------------------------------------------------------
-void segmenting_segment(int16* imgarray, int16 imgsize)
-{
-  uint16 contourbin, contourlen;
-  segQue_t contourlist[SEGCONLEVEL];
-  // calclulate contour distance
-  contourbin = segmenting_contourbinCal(seg_cfg_minsig, SEGCONLEVEL);
-
-  contourlen = SEGCONLEVEL;
-  // fist of all, sort img by contour
-  segmenting_contourSorting(imgarray, imgsize,contourlist,contourlen, contourbin, seg_cfg_minsig);
-  // segment by watershed algorithm
-  segmenting_watershedCal(imgarray, imgsize,contourlist, contourlen, seg_cfg_minpeak);
-  // more segment by merging 
-  segmenting_moresegment(imgarray, imgsize);
-}
-#endif
 
 
 

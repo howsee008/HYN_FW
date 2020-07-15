@@ -82,7 +82,7 @@ typedef struct
 //-----------------------------------------------------------------------------
 void segmentation_init(void);
 void segmentation_getConfig(segConfig_t const * segConfigPtr);
-segmentLabel_ptr segmentation_searchRoi(touchImage_t* imgarray);
+
 segPublic_t * segmentation_getSegmentInfo(void);
 uint16 segmentation_segments(touchImage_t* imgarray);
 

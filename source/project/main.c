@@ -47,12 +47,10 @@ int main(void)
 {
 
 
- 	segmentLabel_ptr roiptr;
 
     segmentation_init();
 	segmentation_getConfig(&segmentcfg);
 	
-	roiptr = segmentation_searchRoi((touchImage_t *)testimg);
 
 	segmentation_segments((touchImage_t *)testimg);
 	

@@ -20,11 +20,19 @@
 #define OBJ_DAM    11
 #define OBJ_MASK   12
 #define OBJ_INQE   13
-#define OBJ_INIT   15
+#define OBJ_INIT   14
 
 
 #define RES_ERROR0  (-1)
 #define RES_OK (0)
+
+#define SEGHOOKSIZE  (CFG_MAX_OBJECTS+4)
+#define SEGHOOKID_OBJ 	 (0)   					// 0~CFG_MAX_OBJECTS-1 objects
+#define SEGHOOKID_UNSEG  (CFG_MAX_OBJECTS)		//  unseg
+#define SEGHOOKID_DAM 	 (CFG_MAX_OBJECTS+1)	//  dam
+#define SEGHOOKID_BCKGND (CFG_MAX_OBJECTS+2)	//  background
+#define SEGHOOKID_DIA	 (CFG_MAX_OBJECTS+3)	//  dilate
+
 //=============================================================================
 // Global Data Type Definition
 //=============================================================================
