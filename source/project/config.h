@@ -18,8 +18,8 @@
 //-----------------------------------------------------------------------------
 
 #define CFG_MAX_OBJECTS	(10)
-#define CFG_NUM_2D_ROWS	(8)//(18)
-#define CFG_NUM_2D_COLS	(6)//(32)
+#define CFG_NUM_2D_ROWS	(8)//(8)//(18)
+#define CFG_NUM_2D_COLS	(12)//(6)//(32)
 
 #define MAX_OBJECTS (10)
 
