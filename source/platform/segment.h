@@ -26,13 +26,13 @@
 #define RES_ERROR0  (-1)
 #define RES_OK (0)
 
-#define SEGHOOKSIZE  (CFG_MAX_OBJECTS+4)
+#define SEGHOOKSIZE  (CFG_MAX_OBJECTS+5)
 #define SEGHOOKID_OBJ 	 (0)   					// 0~CFG_MAX_OBJECTS-1 objects
-#define SEGHOOKID_UNSEG  (CFG_MAX_OBJECTS)		//  unseg
+#define SEGHOOKID_MINB  (CFG_MAX_OBJECTS)		//  unsegment below minpeak
 #define SEGHOOKID_DAM 	 (CFG_MAX_OBJECTS+1)	//  dam
 #define SEGHOOKID_BCKGND (CFG_MAX_OBJECTS+2)	//  background
 #define SEGHOOKID_DIA	 (CFG_MAX_OBJECTS+3)	//  dilate
-
+#define SEGHOOKID_UNSEG  (CFG_MAX_OBJECTS+4)	// unsegment above minpeak
 //=============================================================================
 // Global Data Type Definition
 //=============================================================================

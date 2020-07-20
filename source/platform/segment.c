@@ -44,6 +44,7 @@ static segmentLabel_t * segObjects;
 static segmentLabel_t * segBackground;
 static segmentLabel_t * segUnSegmented;
 static segmentLabel_t * segDam;
+static segmentLabel_t * segMinb;
 
 static uint8p8 segCentroidRow[CFG_MAX_OBJECTS];
 static uint8p8 segCentroidCol[CFG_MAX_OBJECTS];
@@ -344,7 +345,7 @@ static void segmentation_fillFlood(segnode_t * seedNode, uint16 lableId,segmentL
 
 	fifo.headP=&fifoHead;
 	fifo.tailP=&fifoTail;
-	fifo.hookcount=0;
+	fifo.hookcount=1;
 
 	segmentation_resetHooks(&fifo);
 
@@ -440,7 +441,25 @@ static void segmentation_sortDilatedRoiToSegments(touchImage_t* img, hook_t* seg
 
 }
 
-
+//-----------------------------------------------------------------------------
+// Function Name:	segmenting_init
+// Description:		
+//-----------------------------------------------------------------------------
+static uint16 segmentation_getFreeLableID(void)
+{
+	uint16 res;
+	if(segLable<CFG_MAX_OBJECTS)
+	{
+		res=segLable;
+		
+	}
+	else
+	{
+		res=SEGHOOKID_UNSEG;
+	}
+	segLable ++;
+	return res;
+}
 
 //-----------------------------------------------------------------------------
 // Function Name:	segmenting_init
@@ -520,9 +539,9 @@ static int16 segmentation_searchBlobByWatershed(hook_t* contour,hook_t* segments
 
 					   if(nbLab==OBJ_MINB)
 					   {
-							labeid=segLable++;
+							labeid=segmentation_getFreeLableID();
 							segmentation_removeQueue(contour,loop,&nb);
-							segmentation_fillFlood(&nb,labeid,segUnSegmented,segments,1);
+							segmentation_fillFlood(&nb,labeid,segMinb,segments,1);
 					   }
 					   
 					}
@@ -566,31 +585,26 @@ static int16 segmentation_searchBlobByWatershed(hook_t* contour,hook_t* segments
 	
 	cur.row=contour->headP[loop].feilds.nextRow;
 	cur.col=contour->headP[loop].feilds.nextCol;
-
+	segmentation_resetHooks(&fifo);
 	if(cur.row!=0x3f || cur.col!=0x3f)
 	{
 		if(loop<=seg_minpeakContourLevel)
 		{
-			segmentation_pushQueue(contour, OBJ_MINB, &cur);
-			
-			while(!(cur.row==0x3f&&cur.col==0x3f))
-			{
-				segmentLabel_t * node;
-				node = & segLabelImage.matrix[cur.row][cur.col];
-				node->feilds.lable=OBJ_MINB;
-				cur.row = node->feilds.nextRow;
-				cur.col = node->feilds.nextCol;				
-			}
-			
-			contour->headP[loop].value=0xffff;
-		}
-		else
-		{
-			segmentation_resetHooks(&fifo);
 			segmentation_popQueue(contour,loop,&cur);
 			while(!(cur.row==0x3f&&cur.col==0x3f))
 			{
-				labeid=segLable++;
+				segmentation_fillFlood(&cur,OBJ_MINB,&contour->headP[loop],segments,0);
+				segmentation_popQueue(contour,loop,&cur);
+			}
+			
+		}
+		else
+		{
+			
+			segmentation_popQueue(contour,loop,&cur);
+			while(!(cur.row==0x3f&&cur.col==0x3f))
+			{
+				labeid=segmentation_getFreeLableID();
 				segBigSegCount=labeid;
 				segmentation_fillFlood(&cur,labeid,&contour->headP[loop],segments,0);
 				segmentation_popQueue(contour,loop,&cur);
@@ -603,7 +617,7 @@ static int16 segmentation_searchBlobByWatershed(hook_t* contour,hook_t* segments
 
   }
 
-  return segLable;
+  return labeid;
   
 }
 //-----------------------------------------------------------------------------
@@ -822,14 +836,15 @@ static void segmentation_doMergeblobs(uint16 merged, uint16 killed,hook_t* segho
 static int16 segmentation_mergeblobs(touchImage_t* imgarray,int16* conTable,hook_t* seghook)
 {
 	int16 (*damTab)[10]; // when col>row, contain sum of dam, when col<row, contain merge coef
-	uint16 newCount, minCoef;
+	uint16 newCount,totalCount, minCoef;
 	segnode_t curDam,nextDam, nb;
 	uint16 i,j,nbId,nbLable,maxnbLable;
 	uint16 mergedId,killedId;
 	uint16 goMerge,goKill;
 
 	damTab=(int16(*)[10])conTable;
-	newCount = segLable;
+	totalCount=(segLable<CFG_MAX_OBJECTS)?segLable:CFG_MAX_OBJECTS;
+	newCount = totalCount;
 	mergedId = 0xffff;
 	killedId = 0xffff;
 	while(1)// warning infinit loop
@@ -839,7 +854,7 @@ static int16 segmentation_mergeblobs(touchImage_t* imgarray,int16* conTable,hook
 		curDam.row=seghook->headP[SEGHOOKID_DAM].feilds.nextRow;
 		if(curDam.col==0x3f && curDam.row==0x3f)
 			break;
-
+		memset(conTable,0,SEGCONTOURMAX*2);
 		while(!(curDam.col==0x3f && curDam.row==0x3f))
 		{
 			i=j=0xffff; // i,j contain objects label in the neighbour. lable of i <=lable of j
@@ -900,7 +915,7 @@ static int16 segmentation_mergeblobs(touchImage_t* imgarray,int16* conTable,hook
 			break;
 
 		// calc segments' sum and position for the object merge calcuation below
-		for(i=0;i<segLable;i++)
+		for(i=0;i<totalCount;i++)
 		{
 		 	if((mergedId==0xffff)||(mergedId==i))
 		 	{
@@ -912,25 +927,21 @@ static int16 segmentation_mergeblobs(touchImage_t* imgarray,int16* conTable,hook
 
 		// calc coef of all dams and find the minCoef
 		minCoef=0xffff;
-		for(i=0;i<segLable;i++)
+		for(i=0;i<totalCount;i++)
 		{
-			for(j=0;j<i;j++)
+			for(j=i+1;j<totalCount;j++)
 			{
-				if(killedId==i || killedId==j)// first of all, update killed node in the matrix
+				if(damTab[i][j]!=0)
 				{
-					damTab[i][j]=0xffff;
-				}
-				if((damTab[i][j]!=0xffff)&&(mergedId==0xffff || mergedId==i||mergedId==j))
-				{
-					// calc coef
-					damTab[i][j]=segmentation_calcMergeCoef(i,j,damTab[j][i]);
-				}
+					uint16 coef;
 
-				if((damTab[i][j]!=0xffff)&&(minCoef>(uint16)damTab[i][j]))
-				{
-					minCoef=damTab[i][j];
-					goMerge=j;
-					goKill=i;
+					coef = segmentation_calcMergeCoef(i, j, damTab[i][j]);
+					if(minCoef>coef)
+					{
+						minCoef=coef;
+						goMerge=i;
+						goKill=j;
+					}
 				}
 			}
 		}
@@ -958,7 +969,7 @@ static int16 segmentation_mergeblobs(touchImage_t* imgarray,int16* conTable,hook
 						nbLable = segLabelImage.matrix[nb.row][nb.col].feilds.lable;
 						if((nbLable<CFG_MAX_OBJECTS)&&(nbLable>segBigSegCount)) // small segments should be killed
 						{
-							segmentation_doMergeblobs(OBJ_MINB,nbLable,seghook);
+							segmentation_doMergeblobs(SEGHOOKID_BCKGND,nbLable,seghook);
 							newCount-=1;
 						
 						}
@@ -1030,7 +1041,7 @@ static int16 segmentation_mergeblobs(touchImage_t* imgarray,int16* conTable,hook
 	   seg_contourBin=(uint16)((seg_cfg_maxSig-seg_cfg_minSig)/seg_cfg_contourRes);
    }
    
-   seg_minpeakContourLevel=((seg_cfg_minPeak-seg_cfg_minSig)+seg_contourBin>>1)/seg_contourBin;
+   seg_minpeakContourLevel=((seg_cfg_minPeak-seg_cfg_minSig)+(seg_contourBin>>1))/seg_contourBin;
    
    if(seg_minpeakContourLevel>seg_cfg_contourRes) seg_minpeakContourLevel=seg_cfg_contourRes;
 
@@ -1045,6 +1056,7 @@ static int16 segmentation_mergeblobs(touchImage_t* imgarray,int16* conTable,hook
 void segmentation_init(void)
 {  
   segObjects 	 = &seghooks[SEGHOOKID_OBJ];  // 0~9th for object link  
+  segMinb        = &seghooks[SEGHOOKID_MINB];
   segUnSegmented = &seghooks[SEGHOOKID_UNSEG];// 10th for unsegment
   segDam		 = &seghooks[SEGHOOKID_DAM];// 11th for dam
   segBackground  = &seghooks[SEGHOOKID_BCKGND];// 12th for background
