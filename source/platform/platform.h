@@ -60,6 +60,7 @@ typedef struct
   segmentLabel_t const * segments;// it contains object info.
   segmentLabel_t const * background; // it is link of background sensors or non-ROI sensor
   segmentLabel_t const * unsegmented; // it is a link of small segments
+  uint16 *              objbitmask;
 }segPublic_t;
 
 typedef struct
@@ -82,10 +83,11 @@ typedef struct
 //-----------------------------------------------------------------------------
 void segmentation_init(void);
 void segmentation_getConfig(segConfig_t const * segConfigPtr);
-
 segPublic_t * segmentation_getSegmentInfo(void);
 uint16 segmentation_segments(touchImage_t* imgarray);
-
+void segmentation_calcSegmentPosition(touchImage_t * imgarray,uint16 segCount);
+int16 segmentation_getSegmentPosition(uint8p8 * posRow, uint8p8* posCol, uint16 offset);
+int16 segmentation_getSegmentSignal(int32* sig, uint16 offset);
 
 
 //-----------------------------------------------------------------------------

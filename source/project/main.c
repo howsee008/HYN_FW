@@ -118,7 +118,7 @@ const int16  testimg[CFG_NUM_2D_COLS*CFG_NUM_2D_ROWS]={
 #endif
 };
 
-segConfig_t segmentcfg={20,300,5,50,100};
+segConfig_t segmentcfg={20,300,5,50,200};
 
 //=============================================================================
 // Local (Static) Functions Declaration
@@ -134,13 +134,13 @@ segConfig_t segmentcfg={20,300,5,50,100};
 //-----------------------------------------------------------------------------
 int main(void)
 {
-
+	uint16 segcount;
 
 
     segmentation_init();
 	segmentation_getConfig(&segmentcfg);
-	segmentation_segments((touchImage_t *)testimg);
-	
+	segcount=segmentation_segments((touchImage_t *)testimg);
+	segmentation_calcSegmentPosition((touchImage_t *)testimg, segcount);
 	return 1;
 }
 

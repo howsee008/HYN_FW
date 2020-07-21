@@ -33,6 +33,9 @@
 #define SEGHOOKID_BCKGND (CFG_MAX_OBJECTS+2)	//  background
 #define SEGHOOKID_DIA	 (CFG_MAX_OBJECTS+3)	//  dilate
 #define SEGHOOKID_UNSEG  (CFG_MAX_OBJECTS+4)	// unsegment above minpeak
+
+#define END_IDX  (0x3f)
+#define RESET_VAL (0xffff)
 //=============================================================================
 // Global Data Type Definition
 //=============================================================================
