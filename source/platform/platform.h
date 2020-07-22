@@ -57,10 +57,10 @@ typedef union
 typedef struct
 {
   segmentLabelImage_t const * lableMap; // label and linker. it has same size of img
-  segmentLabel_t const * segments;// it contains object info.
+  segmentLabel_t const * objects;// it contains object info.
   segmentLabel_t const * background; // it is link of background sensors or non-ROI sensor
   segmentLabel_t const * unsegmented; // it is a link of small segments
-  uint16 *              objbitmask;
+  uint16 const *         objbitmask; // bit mask of object segments id
 }segPublic_t;
 
 typedef struct

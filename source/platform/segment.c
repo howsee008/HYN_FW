@@ -1102,7 +1102,7 @@ void segmentation_init(void)
   segBackground  = &seghooks[SEGHOOKID_BCKGND];// 12th for background
   
   segPublicinfo.lableMap=&segLabelImage;
-  segPublicinfo.segments=segObjects; 
+  segPublicinfo.objects=segObjects; 
   segPublicinfo.unsegmented=segUnSegmented;
   segPublicinfo.background=segBackground;
   segPublicinfo.objbitmask = &segObjBitmask;
@@ -1190,7 +1190,7 @@ void segmentation_calcSegmentPosition(touchImage_t * imgarray,uint16 segCount)
 
 int16 segmentation_getSegmentPosition(uint8p8 * posRow, uint8p8* posCol, uint16 offset)
 {
-	uint16 res;
+	int16 res;
 
 	res=RES_ERROR0;
 	if((offset<CFG_MAX_OBJECTS)&&(segObjBitmask&(1<<offset)))
@@ -1211,7 +1211,7 @@ int16 segmentation_getSegmentPosition(uint8p8 * posRow, uint8p8* posCol, uint16 
 
 int16 segmentation_getSegmentSignal(int32* sig, uint16 offset)
 {
-  uint16 res;
+  int16 res;
 
   res= RES_ERROR0;
   if((offset<CFG_MAX_OBJECTS)&&(segObjBitmask&(1<<offset)))
