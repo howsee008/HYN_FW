@@ -635,7 +635,7 @@ static int16 segmentation_searchBlobByWatershed(hook_t* contour,hook_t* segments
 
   }
 
-  return labeid;
+  return ((labeid<CFG_MAX_OBJECTS)?labeid+1:labeid);
   
 }
 //-----------------------------------------------------------------------------
